@@ -1,0 +1,933 @@
+---
+title: "Análisis Dendrométrico Interanual"
+date: "`r format(Sys.Date(), '%d de %B de %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: cerulean
+    highlight: tango
+    code_folding: show
+  pdf_document:
+    toc: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                     fig.width = 10, fig.height = 6)
+```
+
+# 1. Introducción
+
+Este documento presenta un análisis dendrométrico interanual de parcelas forestales. Se analizarán los datos de inventarios forestales para estudiar el crecimiento de árboles y los cambios en variables de masa a lo largo del tiempo.
+
+# 2. Configuración inicial
+
+## 2.1 Establecimiento del directorio de trabajo y limpieza del entorno
+
+Comenzamos estableciendo el directorio de trabajo y limpiando el entorno:
+
+```{r directorio_trabajo}
+# Puedes descomentar la línea que corresponda a tu sistema
+# setwd("D:\\Desktop\\TFM MEDELLIN\\data")
+# setwd("C:/Users/acristo/Docencia/TFG-TFM/tutorado/2025-Katell/data")
+path_data <- "D:\\Desktop\\TFM MEDELLIN\\coleccion"
+
+setwd(path_data)
+
+# Limpiamos el entorno
+rm(list=ls())
+
+# Verificamos los archivos disponibles
+dir()
+```
+
+## 2.2 Carga de librerías
+
+Cargamos las librerías que utilizaremos para el manejo de datos y realización de gráficos:
+
+```{r librerias}
+# Carga de librerías
+library(ggplot2)        # Para visualización
+library(gridExtra)      # Para organizar gráficos
+require(zoo)            # Para series temporales
+library(readxl)         # Para leer archivos Excel
+library(dplyr)          # Para manipulación de datos
+```
+
+# 3. Importación y preparación de datos
+
+## 3.1 Carga de datos
+
+Importamos los datos desde un archivo Excel:
+
+```{r importar_datos}
+# Importar datos desde Excel
+#path_data <- '~/Docencia/TFG-TFM/tutorado/2025-katell/data/'
+df <- read_xlsx("D:\\Desktop\\TFM MEDELLIN\\coleccion\\inter-anual-dendrometric.xlsx")
+
+# Visualizamos la estructura inicial de los datos
+head(df)
+names(df)
+# Resumen estadístico de los datos
+summary(df)
+```
+
+## 3.2 Preparación y transformación de datos
+
+Preparamos los datos calculando variables fundamentales como el área basimétrica:
+
+```{r preparacion_datos}
+# Convertir DAP a numérico
+df$dbh <- as.numeric(as.character(df$DAP_cm))
+df$DAP_1 <- as.numeric(as.character(df$DAP_1))
+df$DAP_2 <- as.numeric(as.character(df$DAP_2))
+df$DAP_cm <- as.numeric(as.character(df$DAP_cm))
+
+# Calcular área basimétrica en cm²
+df$g_cm2 <- with(df, pi*(dbh/2)^2)
+
+# Crear identificador único para cada árbol
+df$plot_tree_id <- with(df, paste0(plot,'_',tree_id))
+
+# Visualizar los datos preparados
+head(df)
+```
+```{r}
+
+library(dplyr)
+library(lubridate)
+
+# Filter and prepare base data
+clean_data <- df %>%
+  filter(year(date) == 2016) %>%  
+  filter(!is.na(DAP_cm)) %>%
+  mutate(
+    plot = as.character(plot),
+    species = as.character(species),  # Replace 'Especie' with your actual species column name
+    BA_m2 = pi * (DAP_cm / 100)^2 / 4
+  )
+
+# Calculate total trees per plot (needed for proportions)
+total_per_plot <- clean_data %>%
+  group_by(plot) %>%
+  summarise(N_total = n(), .groups = 'drop')
+
+# Species-level metrics per plot
+species_metrics <- clean_data %>%
+  group_by(plot, species) %>%
+  summarise(
+    N_species = n(),
+    BA_species = sum(BA_m2, na.rm = TRUE),
+    .groups = 'drop'
+  ) %>%
+  left_join(total_per_plot, by = "plot") %>%
+  mutate(
+    Proportion = N_species / N_total,
+    Trees_ha = N_species * (10000 / 706.86),
+    BA_ha_species = BA_species * (10000 / 706.86)
+  ) %>%
+  arrange(plot, species)
+
+# Print species-wise results
+print(species_metrics)
+
+
+```
+
+
+
+
+# 4. Análisis de distribución de diámetros
+
+Analizamos la distribución de diámetros por parcela e inventario:
+
+```{r distribucion_diametros, fig.height=10}
+# Histogramas facetados para distribución de diámetros
+p1 <- ggplot(df, aes(x = dbh)) +
+  geom_histogram(aes(y = after_stat(density)), 
+                 bins = 15, 
+                 fill = "steelblue", 
+                 color = "black",
+                 alpha = 0.7) +
+  geom_density(color = "red", linewidth = 1) +
+  facet_grid(id_inv ~ plot ) +
+  labs(title = "Distribución de diámetros por parcela e inventario",
+       x = "Diámetro (cm)",
+       y = "Densidad") +
+  theme_bw() +
+  theme(strip.background = element_rect(fill = "lightgray"),
+        strip.text = element_text(face = "bold"))
+
+print(p1)
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(gridExtra)
+
+# Filter and relabel plots
+df_inv1_pine <- df %>%
+  filter(id_inv == 1, plot %in% c("Mixta", "Pino"), species == "pine") %>%
+  mutate(plot = recode(plot, "Mixta" = "Mixed", "Pino" = "Pure"))
+
+# Diameter distribution (DAP_cm)
+p1 <- ggplot(df_inv1_pine, aes(x = DAP_cm)) +
+  geom_histogram(bins = 20, fill = "gray85", color = "black") +
+  facet_wrap(~ plot, scales = "free_y") +
+  labs(x = "Diameter at Breast Height (cm)", y = "Frequency") +
+  theme_classic(base_size = 12)
+
+# Height distribution (Altura_m)
+p2 <- ggplot(df_inv1_pine, aes(x = Altura_m)) +
+  geom_histogram(bins = 20, fill = "gray85", color = "black") +
+  facet_wrap(~ plot, scales = "free_y") +
+  labs(x = "Tree Height (m)", y = "Frequency") +
+  theme_classic(base_size = 12)
+
+# Combine both plots
+gridExtra::grid.arrange(p1, p2, ncol = 2)
+
+
+
+
+```
+
+
+# 5. Cálculo de incrementos en área basimétrica
+
+Calculamos el crecimiento en área basimétrica entre inventarios consecutivos y entre el primer y último inventario.
+
+## 5.1 Crecimiento entre inventarios consecutivos
+
+```{r crecimiento_consecutivo}
+# Cálculo del crecimiento en área basimétrica entre inventarios consecutivos
+df <- df %>%
+  arrange(plot_tree_id, id_inv) %>%
+  group_by(plot_tree_id) %>%
+  mutate(g_growth_cm2_yr = case_when(
+    id_inv == 4 ~ NA_real_,            # Para el inventario 4, asignar NA
+    TRUE ~ ( lead(g_cm2) - g_cm2 ) / case_when(    # Para los demás, calcular diferencia de secciones
+                    id_inv==1 ~ (6+5/12),
+                    id_inv==2 ~ (1+7/12),
+                    id_inv==3 ~ (7/12),
+                    id_inv==4 ~ NA_real_
+  ))) %>%
+  ungroup()
+```
+
+## 5.2 Crecimiento entre el primer y último inventario
+
+```{r crecimiento_total}
+# Cálculo del incremento entre el primer y el último inventario
+df <- df %>%
+  group_by(plot_tree_id) %>%
+  mutate(
+    # Verificar si el árbol está presente en inventarios 1 y 4
+    present_in_inv1 = any(id_inv == 1),
+    present_in_inv4 = any(id_inv == 4),
+    # Obtener el área basimétrica cuando esté disponible
+    g_inv4 = ifelse(present_in_inv4, g_cm2[id_inv == 4], NA_real_),
+    g_inv1 = ifelse(present_in_inv1, g_cm2[id_inv == 1], NA_real_),
+    # Calcular g solo si existen mediciones en ambos inventarios
+    g_1a4_cm2_yr = case_when(
+      id_inv == 1 & present_in_inv1 & present_in_inv4 ~ (g_inv4 - g_inv1)/(8+7/12),
+      TRUE ~ NA_real_
+    )
+  ) %>%
+  select(-present_in_inv1, -present_in_inv4, -g_inv4, -g_inv1) %>%
+  ungroup()
+
+# Visualizamos los resultados
+head(df)
+```
+
+
+
+
+# 6. Cálculo de variables de masa
+
+Calculamos variables a nivel de parcela como el área basal por hectárea y la densidad de árboles.
+
+```{r variables_masa}
+# Cálculo de área basal total por parcela e inventario
+byPlot <- df %>%
+  group_by(id_inv, plot) %>%
+  summarise(
+    # Suma de las áreas basales en cm²
+    sum_g_cm2 = sum(g_cm2, na.rm = TRUE),
+    # Número de árboles
+    n_arboles = n()
+  ) %>%
+  ungroup()
+
+# Conversión a m²/ha
+# Radio de parcela = 15m, por lo tanto área = π × r² = π × 15² = 706.86 m²
+# Factor de conversión a hectáreas: 10000 m² / 706.86 m² = 14.147
+area_parcela_m2 <- pi * 15^2
+factor_conversion <- 10000 / area_parcela_m2
+
+byPlot <- byPlot %>%
+  mutate(
+    # Convertir de cm² a m²
+    area_basal_m2 = sum_g_cm2 / 10000,
+    # Convertir a m²/ha
+    area_basal_m2_ha = area_basal_m2 * factor_conversion,
+    # Densidad de árboles por hectárea
+    densidad_arboles_ha = n_arboles * factor_conversion
+  )
+
+# Visualizamos los resultados
+print(byPlot)
+```
+
+# 7. Análisis gráfico de variables de masa
+
+## 7.1 Área basal por parcela e inventario
+
+```{r plot_area_basal}
+# Gráfico de área basal por parcela e inventario
+ggplot(byPlot, aes(x = factor(id_inv), y = area_basal_m2_ha, fill = factor(plot))) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Área basal por hectárea según parcela e inventario",
+       x = "Inventario",
+       y = "Área basal (m²/ha)",
+       fill = "Parcela") +
+  theme_minimal() +
+  scale_fill_brewer(palette = "Set1")
+```
+
+## 7.2 Evolución temporal del área basal
+
+```{r plot_evolucion}
+# Gráfico de evolución temporal por parcela
+ggplot(byPlot, aes(x = factor(id_inv), y = area_basal_m2_ha, group = factor(plot), 
+                   color = factor(plot))) +
+  geom_line(size = 1) +
+  geom_point(size = 3) +
+  labs(title = "Evolución del área basal por hectárea",
+       x = "Inventario",
+       y = "Área basal (m²/ha)",
+       color = "Parcela") +
+  theme_minimal() +
+  scale_color_brewer(palette = "Set1")
+```
+
+# 8. Cálculo y análisis de BAL (Basal Area of Larger trees)
+
+El índice BAL representa el área basal de los árboles más grandes que un determinado árbol, y es un indicador de competencia.
+
+## 8.1 Verificación de datos faltantes
+
+```{r check_na}
+# Verificamos datos faltantes
+na_check <- df %>%
+  group_by(id_inv, plot) %>%
+  summarise(
+    n_total = n(),
+    n_na_dbh = sum(is.na(dbh)),
+    n_na_g_cm2 = sum(is.na(g_cm2)),
+    pct_na = round(100 * sum(is.na(g_cm2)) / n(), 2)
+  ) %>%
+  arrange(desc(pct_na))
+
+print(na_check)
+```
+
+## 8.2 Cálculo del índice BAL
+
+```{r calculo_bal}
+# Calculamos el BAL manejando valores NA
+df_con_bal <- df %>%
+  # Filtrar registros con valores NA en g_cm2
+  filter(!is.na(g_cm2)) %>%
+  # Convertir g_cm2 a m2/ha
+  mutate(g_m2_ha = g_cm2 / 10000 * factor_conversion) %>%
+  # Agrupar por inventario y parcela
+  group_by(id_inv, plot) %>%
+  # Ordenar por área basal ascendente
+  arrange(id_inv, plot, g_cm2) %>%
+  # Calcular la suma acumulada y luego restar del total
+  mutate(
+    cum_g_m2_ha = cumsum(g_m2_ha),
+    total_g_m2_ha = sum(g_m2_ha),
+    bal_m2_ha = total_g_m2_ha - cum_g_m2_ha
+  ) %>%
+  # Restaurar el orden original
+  ungroup()
+
+# Verificamos los resultados
+bal_check <- df_con_bal %>%
+  group_by(id_inv, plot) %>%
+  summarise(
+    n_arboles = n(),
+    min_bal = min(bal_m2_ha, na.rm = TRUE),
+    max_bal = max(bal_m2_ha, na.rm = TRUE),
+    mean_bal = mean(bal_m2_ha, na.rm = TRUE)
+  )
+
+print(bal_check)
+```
+
+## 8.3 Análisis gráfico del BAL
+
+```{r plot_bal_diametro}
+# Gráfico de BAL vs diámetro
+ggplot(df_con_bal, aes(x = dbh, y = bal_m2_ha, color = factor(plot))) +
+  geom_point(alpha = 0.7) +
+  facet_wrap(~ id_inv, labeller = labeller(id_inv = function(x) paste("Inventario", x))) +
+  labs(title = "BAL por diámetro en cada inventario",
+       x = "Diámetro (cm)",
+       y = "BAL (m²/ha)",
+       color = "Parcela") +
+  theme_minimal() +
+  scale_color_brewer(palette = "Set1")
+```
+
+```{r plot_bal_tendencia}
+# Gráfico de líneas suavizadas para ver tendencias
+ggplot(df_con_bal, aes(x = dbh, y = bal_m2_ha, color = factor(plot))) +
+  geom_smooth(method = "loess", se = FALSE) +
+  facet_wrap(~ id_inv) +
+  labs(title = "Tendencia del BAL según diámetro",
+       x = "Diámetro (cm)",
+       y = "BAL (m²/ha)",
+       color = "Parcela") +
+  theme_minimal()
+```
+
+```{r plot_bal_boxplot}
+# Gráfico de boxplot de BAL por parcela e inventario
+ggplot(df_con_bal, aes(x = factor(plot), y = bal_m2_ha, fill = factor(plot))) +
+  geom_boxplot() +
+  facet_wrap(~ id_inv, labeller = labeller(id_inv = function(x) paste("Inventario", x))) +
+  labs(title = "Distribución de BAL por parcela e inventario",
+       x = "Parcela",
+       y = "BAL (m²/ha)",
+       fill = "Parcela") +
+  theme_minimal() +
+  scale_fill_brewer(palette = "Set1")
+```
+
+# 9. Análisis estadístico avanzado
+
+## 9.1 Carga de librerías
+Preparación para el análisis estadístico. 
+Cargamos bibliotecas adicionales para análisis estadístico:
+
+```{r prep_estadistica}
+# Cargamos bibliotecas para análisis estadístico
+library(GGally)        # Para matrices de correlación
+library(performance)   # Evaluación de modelos
+library(see)           # Visualizaciones
+library(lme4)          # Para modelos mixtos
+library(sjPlot)        # Para visualizar modelos mixtos
+```
+
+## 9.2 Resumen estadístico de los datos
+```{r resume_estadistica}
+summary(df_con_bal)
+```
+
+## 9.3 Análisis de crecimientos negativos
+
+Examinamos los casos donde se registran crecimientos negativos:
+
+```{r crec_negativos}
+# Identificar crecimientos negativos entre inventarios consecutivos
+filas_neg_grow <- df[df$g_growth_cm2_yr < 0 & !is.na(df$g_growth_cm2_yr), 
+                    c("plot", "date", "id_inv", "tree_id", "species", 
+                      "g_growth_cm2_yr", "g_1a4_cm2_yr", "Altura_m", 
+                      "dbh", "g_cm2", "plot_tree_id")] 
+
+# Identificar crecimientos negativos entre inventario 1 y 4
+filas_neg_grow_1a4 <- df[df$g_1a4_cm2_yr < 0 & !is.na(df$g_1a4_cm2_yr), 
+                        c("plot", "date", "id_inv", "tree_id", "species", 
+                          "g_growth_cm2_yr", "g_1a4_cm2_yr", "Altura_m", 
+                          "dbh", "g_cm2", "plot_tree_id")] 
+
+# Inspeccionar resultados
+print(filas_neg_grow)
+print(filas_neg_grow_1a4)
+
+# Contar registros con crecimientos negativos
+cat("Número de registros con crecimiento negativo entre inventarios consecutivos:", 
+    nrow(filas_neg_grow), "\n")
+cat("Número de registros con crecimiento negativo entre inventario 1 y 4:", 
+    nrow(filas_neg_grow_1a4), "\n")
+```
+
+## 9.4 Exploración de correlaciones entre variables
+
+```{r correlaciones, fig.width=12, fig.height=14}
+# Matriz de correlación entre variables seleccionadas
+ggpairs(df_con_bal[, c("g_1a4_cm2_yr", "dbh", "Altura_m", "bal_m2_ha", "g_cm2", "g_m2_ha")],
+        title = "Matriz de correlación entre variables")
+```
+
+## 9.5 Transformación logarítmica de variables
+
+```{r transform_log}
+# Transformaciones logarítmicas
+df_con_bal$log_dbh <- log(df_con_bal$dbh)
+df_con_bal$log_Altura_m <- log(df_con_bal$Altura_m)
+df_con_bal$log_g_cm2 <- log(df_con_bal$g_cm2)
+df_con_bal$log_g_1a4_cm2_yr <- log(df_con_bal$g_1a4_cm2_yr)
+df_con_bal$log_g_m2_ha <- log(df_con_bal$g_m2_ha)
+
+# Añadimos variables de masa
+df_con_bal <- merge(df_con_bal, 
+                   byPlot[, c("plot", "area_basal_m2_ha", "densidad_arboles_ha")], 
+                   by="plot")
+```
+
+## 9.6 Preparación del dataframe para modelos
+
+```{r prep_df1}
+# Seleccionamos sólo los datos del primer inventario para el análisis
+df_1 <- df_con_bal[df_con_bal$id_inv==1, 
+                  c("plot", "tree_id", "plot_tree_id", "date", "id_inv", 
+                    "species", "Altura_m", "dbh", "g_cm2", "g_1a4_cm2_yr", 
+                    "bal_m2_ha", "log_Altura_m", "log_dbh", "log_g_cm2", 
+                    "log_g_1a4_cm2_yr", "log_g_m2_ha")]
+```
+
+## 9.7 Modelos lineales
+
+```{r modelos_lm}
+# Modelo lineal 1: logaritmo del crecimiento en función del área basimétrica y altura
+model.lm.1 <- lm(log_g_1a4_cm2_yr ~ log_g_cm2 + log_Altura_m, data=df_1)
+summary(model.lm.1)
+
+# Modelo lineal 2: logaritmo del crecimiento en función del área basimétrica y área basimétrica por hectárea
+model.lm.2 <- lm(log_g_1a4_cm2_yr ~ log_g_cm2 + log_g_m2_ha, data=df_1)
+summary(model.lm.2)
+
+# Modelo lineal 3: logaritmo del crecimiento en función del área basimétrica y BAL
+model.lm.3 <- lm(log_g_1a4_cm2_yr ~ log_g_cm2 + bal_m2_ha, data=df_1)
+summary(model.lm.3)
+```
+
+## 9.8 Exploración gráfica de relaciones
+
+```{r relacion_bal_crecimiento}
+# Exploramos la relación entre BAL y crecimiento
+ggplot(df_1 %>% filter(!is.na(g_1a4_cm2_yr)), 
+       aes(x = bal_m2_ha, y = g_1a4_cm2_yr)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "loess") +
+  facet_wrap(~ plot) +
+  labs(title = "Relación entre BAL y crecimiento anual en área basal",
+       x = "BAL (m²/ha)",
+       y = "Incremento anual en área basal (cm²/año)") +
+    theme_minimal()
+
+## la parcela mixta tiene dos crecimientos que parecen demasiado grandes, el segundo y cuarto de la gráfica
+```
+
+## 9.9 Modelos mixtos
+```{r check_modelo, fig.width=8, fig.height=12}
+# Modelo mixto lineal simple
+modelo_1 <- lmer(log_g_1a4_cm2_yr ~ log_g_cm2 + bal_m2_ha + (1|plot) + (1|species), 
+                data = df_1 %>% filter(!is.na(g_1a4_cm2_yr) & g_1a4_cm2_yr >= 0))
+
+# Resumen del modelo
+summary(modelo_1)
+
+# Diagnóstico del modelo
+check_model(modelo_1)
+```
+```{r visualizacion_modelo_1}
+# Visualización del modelo
+plot_model(modelo_1, type = "pred", terms = c("log_g_cm2", "bal_m2_ha"))
+```
+
+
+
+```{r including the spatial indices}
+library(lmerTest)
+
+multi_plot_competition <- read.csv("D:\\Desktop\\Anillos_cofechar\\New\\coleccion\\forest_competition_indices_all_plots.csv")
+multi_plot_competition<-multi_plot_competition%>%rename(plot=plot_id)
+df_2 <- df_1 %>%
+  left_join(multi_plot_competition %>% select(plot, tree_id, hegyi_species_weighted, hegyi_intraspecific, crown_overlap_index, hegyi_interspecific), 
+            by = c("plot", "tree_id"))
+```
+
+
+```{r testing of different models}
+df_2<-df_2%>%mutate(log_bal_m2_ha=log(bal_m2_ha))
+modelo_1c <- lmer(log_g_1a4_cm2_yr ~ log_g_cm2 + log_bal_m2_ha + hegyi_intraspecific+ hegyi_interspecific + 
+                   (1 | plot) + (1 | species),
+                 data = df_2 %>% filter(!is.na(g_1a4_cm2_yr) & g_1a4_cm2_yr >= 0 &!is.na(log_bal_m2_ha)& log_bal_m2_ha >= 0))
+# Resumen del modelo
+summary(modelo_1c)
+
+df_2 <- df_2 %>%
+  left_join(df %>% select(tree_id, plot, x, y), by = c("tree_id", "plot")) %>%
+  filter(!is.na(x) & !is.na(y))
+
+modelo_1d <- lmer(log_g_1a4_cm2_yr ~ log_g_cm2 + hegyi_intraspecific + hegyi_interspecific +
+                   (1 | plot) + (1 | species),
+                 data = df_2 %>% filter(!is.na(g_1a4_cm2_yr) & g_1a4_cm2_yr >= 0))
+
+summary(modelo_1d)
+res <- residuals(modelo_1d)
+acf(res)               # Check autocorrelation structure
+```
+
+
+
+```{r}
+library(nlme)
+library(dplyr)
+
+df_3 <- df_2 %>% distinct(g_1a4_cm2_yr, .keep_all = TRUE) %>%
+  distinct(x, y, .keep_all = TRUE)%>%
+  filter(!is.na(hegyi_intraspecific) & !is.na(hegyi_interspecific)& species=="pine")
+         
+
+df_3 %>%
+  group_by(plot, x, y) %>%
+  filter(n() > 1) %>%
+  ungroup()
+df_3 <- df_3 %>%
+  mutate(x_jitter = x + runif(n(), -1e-6, 1e-6))
+
+
+
+modelo_2d_nlme_spatial <- lme(
+  fixed = log_g_1a4_cm2_yr ~ log_g_cm2 + hegyi_intraspecific + hegyi_interspecific,
+  random = ~ 1 | plot,
+  correlation = corExp(form = ~ x + y | plot),  # spatial correlation by plot
+  data = df_3 %>% filter(!is.na(g_1a4_cm2_yr) & g_1a4_cm2_yr >= 0)
+)
+
+summary(modelo_2d_nlme_spatial)
+
+```
+
+```{r observation of autocorrelation}
+# Extract normalized residuals from the nlme model
+residuals_nlme <- residuals(modelo_2d_nlme_spatial, type = "normalized")
+
+# Base R plots for ACF and PACF
+acf(residuals_nlme, main = "ACF of Model Residuals")
+pacf(residuals_nlme, main = "PACF of Model Residuals")
+```
+
+
+```{r graphical evaluation}
+library(nlme)
+library(ggplot2)
+library(patchwork)
+
+# Extract normalized residuals and fitted values from Dmodelnlme_lg_PI
+residuals_df <- data.frame(
+  residuals = residuals(modelo_2d_nlme_spatial, type = "normalized"),
+  fitted = fitted(modelo_2d_nlme_spatial)
+)
+
+# --- A. Normal Q-Q Plot ---
+plot_qq <- ggplot(residuals_df, aes(sample = residuals)) +
+  stat_qq() +
+  stat_qq_line(color = "red") +
+  labs(x = "Theoretical Quantiles", y = "Residual Quantiles") +
+  theme_bw(base_size = 12)
+
+# --- B. Residuals vs Fitted Plot (Homoscedasticity) ---
+plot_res_fitted <- ggplot(residuals_df, aes(x = fitted, y = residuals)) +
+  geom_point(alpha = 0.7) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(x = "Predicted Diameter Values", y = "Standardized Residuals") +
+  scale_x_continuous(breaks = seq(0, 200, 50)) +
+  theme_bw(base_size = 12)
+
+# --- C. Autocorrelation Function (ACF) Plot ---
+acf_obj <- acf(residuals_df$residuals, plot = FALSE)
+acf_df <- with(acf_obj, data.frame(lag = lag, acf = acf))
+conf_int <- 1.96 / sqrt(length(residuals_df$residuals))
+
+plot_acf <- ggplot(acf_df, aes(x = lag, y = acf)) +
+  geom_hline(yintercept = 0, color = "gray30") +
+  geom_segment(aes(xend = lag, yend = 0), color = "black", linewidth = 0.6) +
+  geom_hline(yintercept = c(-conf_int, conf_int), linetype = "dashed", color = "blue") +
+  labs(x = "Lag", y = "Autocorrelation Function") +
+  ylim(-0.5, 1) +
+  scale_x_continuous(breaks = seq(0, 30, 5)) +
+  theme_bw(base_size = 12)
+
+# --- D. Partial Autocorrelation Function (PACF) Plot ---
+pacf_obj <- acf(residuals_df$residuals, type = "partial", plot = FALSE)
+pacf_df <- with(pacf_obj, data.frame(lag = lag, acf = acf))
+
+plot_pacf <- ggplot(pacf_df, aes(x = lag, y = acf)) +
+  geom_hline(yintercept = 0, color = "gray30") +
+  geom_segment(aes(xend = lag, yend = 0), color = "black", linewidth = 0.6) +
+  geom_hline(yintercept = c(-conf_int, conf_int), linetype = "dashed", color = "blue") +
+  labs(x = "Lag", y = "Partial Autocorrelation Function") +
+  ylim(-0.5, 1) +
+  scale_x_continuous(breaks = seq(0, 30, 5)) +
+  theme_bw(base_size = 12)
+
+# --- Combine all plots with tags ---
+caliper_diagnostics_fig <- (plot_qq + plot_res_fitted) /
+                            (plot_acf + plot_pacf) +
+  plot_annotation(
+    tag_levels = "A",
+    theme = theme(
+      plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+      plot.tag = element_text(size = 14, face = "bold")
+    )
+  )
+
+# Save the figure as a high-resolution PNG
+ggsave(
+  filename = "caliper_Diagnostics_Model.png",
+  plot = caliper_diagnostics_fig,
+  width = 12,
+  height = 10,
+  dpi = 300
+)
+
+# Display the figure
+caliper_diagnostics_fig
+
+```
+
+
+
+
+
+```{r modelo_mixto_2}
+# Modelo mixto más complejo
+modelo_2 <- lmer(g_1a4_cm2_yr ~ log_g_cm2 + log_g_m2_ha + bal_m2_ha + I(bal_m2_ha^2) + 
+                dbh:bal_m2_ha + (1|plot) + (1|species), 
+                data = df_1 %>% filter(!is.na(g_1a4_cm2_yr) & g_1a4_cm2_yr >= 0))
+
+# Comparar modelos
+anova(modelo_1, modelo_2)
+
+# Ver el mejor modelo
+summary(modelo_2)
+```
+
+## 9.10 Validación del modelo
+
+```{r validacion_modelo}
+# Predecir con el modelo
+df_2[!is.na(df_2$g_1a4_cm2_yr) & df_2$g_1a4_cm2_yr >= 0, "prediccion"] <- 
+  predict(modelo_1c, newdata = df_2 %>% filter(!is.na(g_1a4_cm2_yr) & g_1a4_cm2_yr >= 0))
+
+# Gráfico de valores observados vs predichos
+ggplot(df_2 %>% filter(!is.na(g_1a4_cm2_yr) & g_1a4_cm2_yr >= 0), 
+       aes(x = prediccion, y = g_1a4_cm2_yr)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, color = "red", linetype = "dashed") +
+  labs(title = "Valores observados vs predichos",
+       x = "Incremento predicho en área basal (cm²/año)",
+       y = "Incremento observado en área basal (cm²/año)") +
+  theme_minimal()
+```
+
+```{r plotting predictions and ANOVA}
+
+# Filter for pine trees
+df_pines <- df_3 %>%
+ filter(species == "pine", !is.na(log_g_cm2), log_g_cm2 >= 0)
+
+# Predict growth using the existing model
+df_pines$pred <- predict(modelo_2d_nlme_spatial, newdata = df_pines, allow.new.levels = TRUE)
+
+# Fit a linear model comparing predicted growth across plots
+anova_model <- aov(pred ~ plot, data = df_pines)
+
+
+# Show the ANOVA table
+summary(anova_model)
+
+
+library(ggplot2)
+library(dplyr)
+
+# Filter for pine trees and predict growth
+df_pines <- df_3 %>%
+  filter(species == "pine", !is.na(log_g_cm2), log_g_cm2 >= 0)
+
+df_pines$pred <- predict(modelo_2d_nlme_spatial, newdata = df_pines, allow.new.levels = TRUE)
+
+ggplot(df_pines, aes(x = plot, y = pred, fill = plot)) +
+  # Boxplot with subtle outliers
+  geom_boxplot(
+    alpha = 0.75,
+    width = 0.5,
+    outlier.shape = 21,
+    outlier.size = 2,
+    outlier.stroke = 0.3,
+    outlier.fill = "white",
+    outlier.color = "black"
+  ) +
+  
+  # Mean points (small black diamonds)
+  stat_summary(
+    fun = mean,
+    geom = "point",
+    shape = 23,  # diamond shape
+    size = 2.5,
+    fill = "white",
+    color = "black",
+    stroke = 0.8
+  ) +
+
+  # Custom x-axis labels
+  scale_x_discrete(labels = c("Mixta" = "Mixed", "Pino" = "Pure")) +
+  
+  # Clean and consistent labels
+  labs(
+    title = "Predicted Growth for Pine Trees by Plot Type",
+    x = "Plot Type",
+    y = expression(Predicted~Growth~(g/cm^2))
+  ) +
+
+  # Custom fill colors (journal-style)
+  scale_fill_manual(values = c("Mixta" = "#1f78b4", "Pino" = "#33a02c")) +
+
+  # Clean, minimal theme with sharp text
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", size = 13, hjust = 0.5),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 11),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position = "none"
+  )
+
+```
+
+```{r summary table of basal area}
+library(dplyr)
+
+summary_stats_by_plot <- df_3 %>%
+  group_by(plot) %>%
+  summarise(
+    g_cm2_mean = mean(g_cm2, na.rm = TRUE),
+    g_cm2_min = min(g_cm2, na.rm = TRUE),
+    g_cm2_max = max(g_cm2, na.rm = TRUE),
+    g_cm2_sd   = sd(g_cm2, na.rm = TRUE),
+    
+    g_1a4_cm2_yr_mean = mean(g_1a4_cm2_yr, na.rm = TRUE),
+    g_1a4_cm2_yr_min  = min(g_1a4_cm2_yr, na.rm = TRUE),
+    g_1a4_cm2_yr_max  = max(g_1a4_cm2_yr, na.rm = TRUE),
+    g_1a4_cm2_yr_sd   = sd(g_1a4_cm2_yr, na.rm = TRUE),
+
+    hegyi_intraspecific_mean = mean(hegyi_intraspecific, na.rm = TRUE),
+    hegyi_intraspecific_sd   = sd(hegyi_intraspecific, na.rm = TRUE),
+    hegyi_intraspecific_min  = min(hegyi_intraspecific, na.rm = TRUE),
+    hegyi_intraspecific_max  = max(hegyi_intraspecific, na.rm = TRUE),
+    
+    hegyi_interspecific_mean = mean(hegyi_interspecific, na.rm = TRUE),
+    hegyi_interspecific_sd   = sd(hegyi_interspecific, na.rm = TRUE),
+    hegyi_interspecific_min  = min(hegyi_interspecific, na.rm = TRUE),
+    hegyi_interspecific_max  = max(hegyi_interspecific, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+
+library(tidyr)
+library(knitr)
+
+summary_stats_long <- summary_stats_by_plot %>%
+  pivot_longer(-plot, names_to = "Metric", values_to = "Value") %>%
+  separate(Metric, into = c("Variable", "Statistic"), sep = "_(?=[a-z]+$)") %>%
+  pivot_wider(names_from = plot, values_from = Value)
+
+kable(summary_stats_long, caption = "Summary Statistics by Plot (Pino and Mixta)", digits = 2)
+
+
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(cowplot)  # for manual legend control
+
+# Define labels and colors
+plot_labels <- c("Pino" = "Pure plot", "Mixta" = "Mixed plot")
+plot_colors <- c("Pino" = "steelblue", "Mixta" = "forestgreen")
+
+# Common theme
+common_theme <- theme_classic(base_size = 12) +
+  theme(legend.position = "none")
+
+# Create plots without legends
+p_diam_mixed <- ggplot(df_3 %>% filter(plot == "Mixta"), 
+                       aes(x = dbh, fill = plot)) +
+  geom_histogram(bins = 20, alpha = 0.8, color = "black") +
+  scale_fill_manual(values = plot_colors, labels = plot_labels) +
+  labs(title = "Mixed Plot", x = "Diameter (cm)", y = "Frequency") +
+  common_theme
+
+p_diam_pure <- ggplot(df_3 %>% filter(plot == "Pino"), 
+                      aes(x = dbh, fill = plot)) +
+  geom_histogram(bins = 20, alpha = 0.8, color = "black") +
+  scale_fill_manual(values = plot_colors, labels = plot_labels) +
+  labs(title = "Pure Plot", x = "Diameter (cm)", y = "Frequency") +
+  common_theme
+
+p_height_mixed <- ggplot(df_3 %>% filter(plot == "Mixta"), 
+                         aes(x = Altura_m, fill = plot)) +
+  geom_histogram(bins = 20, alpha = 0.8, color = "black") +
+  scale_fill_manual(values = plot_colors, labels = plot_labels) +
+  labs(x = "Height (m)", y = "Frequency") +
+  common_theme
+
+# Create the plot WITH legend
+p_height_pure <- ggplot(df_3 %>% filter(plot == "Pino"), 
+                        aes(x = Altura_m, fill = plot)) +
+  geom_histogram(bins = 20, alpha = 0.8, color = "black") +
+  scale_fill_manual(name = "Plot Type", values = plot_colors, labels = plot_labels) +
+  labs(x = "Height (m)", y = "Frequency") +
+  theme_classic(base_size = 12)
+
+# Extract legend from one plot
+legend <- cowplot::get_legend(p_height_pure + theme(legend.position = "bottom"))
+
+# Remove legend from the plot after extraction
+p_height_pure <- p_height_pure + theme(legend.position = "none")
+
+# Combine all plots without legends
+plots_grid <- cowplot::plot_grid(
+  p_diam_mixed, p_diam_pure,
+  p_height_mixed, p_height_pure,
+  ncol = 2,
+  labels = NULL,
+  align = "hv"
+)
+
+# Add the shared legend below
+final_plot <- cowplot::plot_grid(
+  plots_grid, legend,
+  ncol = 1,
+  rel_heights = c(1, 0.1)
+)
+
+# Show final plot
+print(final_plot)
+
+
+```
+
+
+# 10. Conclusiones
+
+Este análisis ha permitido:
+
+1. Caracterizar la distribución de diámetros por parcela e inventario.
+2. Calcular el crecimiento en área basimétrica entre inventarios.
+3. Analizar las variables de masa forestal como el área basal por hectárea.
+4. Calcular y analizar el índice de competencia BAL.
+5. Desarrollar modelos de crecimiento incorporando efectos fijos y aleatorios.
+
+Los resultados muestran una relación significativa entre el crecimiento en área basimétrica, el tamaño del árbol y el nivel de competencia expresado mediante el BAL. El modelo mixto que incluye efectos aleatorios para parcela y especie proporciona una mejor explicación de la variación en el crecimiento.

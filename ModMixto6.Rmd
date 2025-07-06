@@ -1,0 +1,1579 @@
+---
+title: "ModMixto_Katell"
+output: html_document
+date: "`r format(Sys.Date(), '%d de %B de %Y')`"
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+# 📁 1. Configuración inicial
+setwd(path <- "D:\\Desktop\\TFM MEDELLIN\\coleccion")
+
+# Cargar librerías
+library(dplR)
+library(tidyr)
+library(dplyr)
+library(nlme)
+library(ggplot2)
+library(readxl)
+library(nortest)
+library(lmtest)
+library(forecast)
+library(patchwork)
+
+dir()
+```
+
+```{r lectura-visualizacion}
+# 📂 2. Lectura y visualización
+DatMB <- read.rwl("D:\\Desktop\\TFM MEDELLIN\\coleccion\\colpipibe.rwl")
+View(DatMB)
+
+af_table <- data.frame(
+  Variable = names(colSums(DatMB, na.rm = TRUE)), 
+  Sum_Value = colSums(DatMB, na.rm = TRUE)
+)
+print(af_table)
+```
+
+```{r intercorrelacion-estandar}
+# 🔗 3. Intercorrelación y estándar
+CorQh <- interseries.cor(DatMB)
+print(CorQh)
+mean(CorQh$res.cor)
+rwl.report(DatMB)
+spag.plot(DatMB, zfac = 0.2)
+
+windows()
+dat3 <- detrend(DatMB, method = "Spline", make.plot = TRUE)
+CorQhEst <- interseries.cor(dat3)
+mean(CorQhEst$res.cor)
+spag.plot(dat3, zfac = 1)
+
+rwi.stats(dat3)
+sens1(dat3)
+
+FuCrn2 <- chron(dat3, biweight = TRUE, prewhiten = TRUE)
+windows()
+plot(FuCrn2)
+```
+
+```{r extracting distance to pith for calculating total radius}
+library(dplR)
+library(tidyverse)
+library(stringr)
+
+# Define paths
+rwl_path <- "D:/Desktop/Anillos_cofechar/New/a corregir/NewColPiPibe.rwl"
+pos_dir <- "D:/Desktop/Anillos_cofechar/New/a corregir"
+
+# Read .rwl file
+rwl_data <- read.rwl(rwl_path)
+nucleos <- colnames(rwl_data)
+
+# Function to extract and calculate radius-related metadata
+extract_pith_info <- function(nucleo_name) {
+  pos_file_path <- file.path(pos_dir, paste0(nucleo_name, ".pos"))
+
+  # Calculate radius from measured rings
+  radius_from_rings <- if (nucleo_name %in% colnames(rwl_data)) {
+    sum(rwl_data[[nucleo_name]], na.rm = TRUE)
+  } else {
+    NA_real_
+  }
+
+  # If .pos file exists, try to extract metadata
+  if (file.exists(pos_file_path)) {
+    pos_lines <- readLines(pos_file_path, warn = FALSE)
+    pith_line <- grep("^#C.*DistanceToPith", pos_lines, value = TRUE)
+
+    if (length(pith_line) > 0) {
+      pith_line_clean <- gsub(",", ".", pith_line[1])
+
+      distance_to_pith <- as.numeric(str_match(pith_line_clean, "DistanceToPith=([0-9.]+)")[, 2])
+      years_to_pith    <- as.numeric(str_match(pith_line_clean, "YearsToPith=([0-9]+)")[, 2])
+      calc_radius_flag <- grepl("CalcRadius=Yes", pith_line_clean)
+
+      total_radius <- radius_from_rings + distance_to_pith
+
+      return(tibble(
+        Individuo           = nucleo_name,
+        RadiusFromRings_mm  = radius_from_rings,
+        DistanceToPith_mm   = distance_to_pith,
+        YearsToPith         = years_to_pith,
+        TotalRadius_mm      = total_radius,
+        CalcRadius          = calc_radius_flag,
+        UsedRadiusOnly      = FALSE
+      ))
+    }
+  }
+
+  # If no pos file or no DistanceToPith line, fallback:
+  return(tibble(
+    Individuo           = nucleo_name,
+    RadiusFromRings_mm  = radius_from_rings,
+    DistanceToPith_mm   = 0,
+    YearsToPith         = NA,
+    TotalRadius_mm      = radius_from_rings,
+    CalcRadius          = FALSE,
+    UsedRadiusOnly      = TRUE
+  ))
+}
+
+# Apply function to all series
+metadata_list <- lapply(nucleos, extract_pith_info)
+pith_metadata <- bind_rows(metadata_list)
+
+# View result
+print(pith_metadata)
+
+```
+
+```{r calculating total radius}
+# Get the replacement values
+# Create a lookup table for replacement values
+replacement_radii <- pith_metadata %>%
+  filter(Individuo %in% c("pibe_1B", "pibe_27A")) %>%
+  select(Individuo, TotalRadius_mm) %>%
+  deframe()  # Converts to named vector
+
+# Apply replacements and add comment
+pith_metadata <- pith_metadata %>%
+  mutate(
+    TotalRadius_mm = case_when(
+      Individuo == "pibe_1A"  ~ replacement_radii["pibe_1B"],
+      Individuo == "pibe_27B" ~ replacement_radii["pibe_27A"],
+      TRUE ~ TotalRadius_mm
+    ),
+    Comment = case_when(
+      Individuo %in% c("pibe_1A", "pibe_27B") ~ "impossible to estimate the pith",
+      TRUE ~ NA_character_
+    )
+  )
+
+# View result
+print(pith_metadata)
+```
+
+
+
+```{r organizacion-datos}
+# 🧹 4. Organización de datos
+
+fila_ceros_2 <- rep(0, length(colnames(DatMB)))
+df_ceros_2 <- data.frame(matrix(fila_ceros_2, nrow = 1))
+colnames(df_ceros_2) <- colnames(DatMB)
+DatMB <- rbind(df_ceros_2, DatMB)
+
+DatMB$Edad <- seq(0, nrow(DatMB) - 1)
+DatMB <- DatMB[, order(colnames(DatMB))]
+DatMB_2 <- pivot_longer(DatMB, cols = 2:length(DatMB), 
+                        names_to = "Individuo", values_to = "AnchoMed_mm")
+
+with(DatMB_2, plot(Edad, AnchoMed_mm))
+
+DatMB_2 <- DatMB_2 %>%
+  group_by(Individuo) %>%
+  mutate(RadioAcum_mm = if_else(is.na(AnchoMed_mm), NA_real_, cumsum(replace_na(AnchoMed_mm, 0))))
+
+write.csv2(DatMB_2, "DatMB.csv")
+```
+
+```{r cap-union}
+# 📥 5. Datos de CAP y unión
+DataCAP <- readxl::read_excel("D:/Desktop/Anillos_cofechar/New/coleccion/Pino_SE2.xlsx")
+
+DataCAP <- DataCAP %>%
+  left_join(pith_metadata %>% select(Individuo, TotalRadius_mm), by = "Individuo") %>%
+  mutate(Rm_mm = TotalRadius_mm) %>%
+  mutate(Rm_cm = Rm_mm / 10)
+
+mydata_MB <- merge(DatMB_2, DataCAP, all = TRUE)
+
+
+mydata_MB$AnchoMed_cm <- mydata_MB$AnchoMed_mm / 10
+mydata_MB$AnchoCorr_cm <- (mydata_MB$Rc_cm / mydata_MB$Rm_cm) * mydata_MB$AnchoMed_cm
+mydata_MB$DAP_cm<- mydata_MB$AnchoCorr_cm*2
+
+mydata_MB <- mydata_MB[order(mydata_MB$Individuo, mydata_MB$Edad), ]
+
+mydata_MB <- mydata_MB %>%
+  group_by(Individuo) %>%
+  mutate(wDAPacum_cm = if_else(is.na(DAP_cm), NA_real_, cumsum(replace_na(DAP_cm, 0)))) %>%
+  arrange(Individuo, Edad)
+
+```
+
+
+```{r metricas}
+# # 📊 6. Métricas por individuo
+
+
+mydata_MB <- mydata_MB %>%
+  rename(Nucleo = Individuo)
+
+
+mydata_MB <- mydata_MB %>%
+
+  filter(!is.na(AnchoMed_mm))
+
+names(mydata_MB)
+         
+```
+
+```{r division-validacion}
+# 🧪 7. División y validación
+Pi_mydata_MB <- mydata_MB %>% filter(Parcela == "pi")
+Pibe_mydata_MB <- mydata_MB %>% filter(Parcela == "pibe")
+
+set.seed(326)
+validation_size_pi <- round(0.39 * nrow(Pi_mydata_MB))
+validation_size_pibe <- round(0.39* nrow(Pibe_mydata_MB))
+
+validation_indices_pi <- sample(nrow(Pi_mydata_MB), validation_size_pi)
+validation_indices_pibe <- sample(nrow(Pibe_mydata_MB), validation_size_pibe)
+
+validation_sample_pi <- Pi_mydata_MB[validation_indices_pi, ]
+validation_sample_pibe <- Pibe_mydata_MB[validation_indices_pibe, ]
+
+training_sample_pi <- Pi_mydata_MB[-validation_indices_pi, ]
+training_sample_pibe <- Pibe_mydata_MB[-validation_indices_pibe, ]
+```
+
+```{r grafico-crecimiento}
+# 📈 Gráfico de trayectoría de crecimiento
+diameter_series_sample_pi = ggplot(training_sample_pi, aes(x=Edad, y=wDAPacum_cm, color = Nucleo)) + 
+  geom_point() + geom_line() + theme_bw() + 
+  ggtitle ("") + 
+  labs(x = "Time (years)",y = "Diameter (cm)") +
+  theme(axis.title.y = element_text(face="plain", vjust=1.5, colour="black", size=12)) +
+  theme(axis.title.x = element_text(face="plain", hjust=0.5, colour="black", size=12)) +
+  theme(axis.text.x = element_text(face="plain",colour="black", size=12)) +
+  theme(axis.text.y = element_text(face="plain",colour="black", size=12)) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "black", size = 0.9))
+
+diameter_series_sample_pibe = ggplot(training_sample_pibe, aes(x=Edad, y=wDAPacum_cm, color = Nucleo)) + 
+  geom_point() + geom_line() + theme_bw() + 
+  ggtitle ("") + 
+  labs(x = "Time (years)",y = "Diameter (cm)") +
+  theme(axis.title.y = element_text(face="plain", vjust=1.5, colour="black", size=12)) +
+  theme(axis.title.x = element_text(face="plain", hjust=0.5, colour="black", size=12)) +
+  theme(axis.text.x = element_text(face="plain",colour="black", size=12)) +
+  theme(axis.text.y = element_text(face="plain",colour="black", size=12)) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "black", size = 0.9))
+
+diameter_series_sample_pi+diameter_series_sample_pibe
+```
+
+# Se van a ajustar 2 modelos de crecimiento usando `nls` y `nlme`.
+
+## 📈 4. Modelo Logístico - PI
+
+```{r modelo-logistico-pi}
+logistic_growth <- function(Edad, D_max, k, t_mid) {
+  D_max / (1 + exp(-k * (Edad - t_mid)))
+}
+
+objective_LG_pi <- function(par) {
+  preds <- logistic_growth(training_sample_pi$Edad, par[1], par[2], par[3])
+  sum((training_sample_pi$wDAPacum_cm - preds)^2)
+}
+
+init_par <- c(D_max = 22, k = 0.05, t_mid = 21)
+fit_optim <- optim(init_par, objective_LG_pi, method = "L-BFGS-B", 
+                   lower = c(1, 0.001, 0), upper = c(100, 1, 100))
+
+training_sample_pi$Nucleo <- as.factor(training_sample_pi$Nucleo)
+
+#training_sample_pi <- groupedData(wDAPacum_cm ~ Edad | Nucleo, data = training_sample_pi)
+
+Dmodelnlme_lg_PI <- nlme(
+  wDAPacum_cm ~ logistic_growth(Edad, D_max, k, t_mid),
+  data = training_sample_pi,
+  fixed = D_max + k + t_mid ~ 1,
+  random = D_max + t_mid ~ 1 | id/Nucleo,
+  correlation = corARMA(p = 1, q = 0, form = ~ Edad | id/Nucleo),
+  start = fit_optim$par,
+  control = nlmeControl(maxIter = 500, msMaxIter = 200)
+)
+
+summary(Dmodelnlme_lg_PI)
+pacf(resid(Dmodelnlme_lg_PI))
+res_NLME2_pi <- residuals(Dmodelnlme_lg_PI, type = "normalized")
+pacf(res_NLME2_pi)
+```
+
+```{r fitted curves for each core}
+# 1. Get predictions from the model (individual-level fits: level = 1)
+training_sample_pi$fit <- predict(Dmodelnlme_lg_PI, level = 1)
+
+# 2. Ensure grouping columns are factors or characters
+training_sample_pi$Nucleo <- as.factor(training_sample_pi$Nucleo)
+training_sample_pi$id <- as.factor(training_sample_pi$id)
+
+# 3. Plot
+library(ggplot2)
+
+ggplot(training_sample_pi, aes(x = Edad, group = Nucleo, color = Nucleo)) +
+  geom_point(aes(y = wDAPacum_cm), alpha = 0.4, size = 1) +         # Observed
+  geom_line(aes(y = fit), size = 0.8) +                             # Fitted
+  facet_wrap(~ id) +                                               # One panel per tree
+  theme_minimal(base_size = 14) +
+  labs(
+    title = "Observed and Fitted Logistic Growth by Tree and Core",
+    subtitle = "Fitted using nonlinear mixed-effects model with AR(1) errors",
+    x = "Age (years)",
+    y = "Diameter at Breast Height (cm)",
+    color = "Core (Nucleo)"
+  ) +
+  theme(
+    legend.position = "bottom",
+    legend.title = element_text(face = "bold"),
+    strip.text = element_text(face = "bold")
+  )
+```
+
+
+## 🌾 5. Modelo Logístico - PIBE
+
+```{r modelo-logistico-pibe}
+objective_LG_pibe <- function(par) {
+  preds <- logistic_growth(training_sample_pibe$Edad, par[1], par[2], par[3])
+  sum((training_sample_pibe$wDAPacum_cm - preds)^2)
+}
+
+init_par_pibe <- c(D_max = 22, k = 0.1, t_mid = 23)
+fit_optim_pibe <- optim(init_par_pibe, objective_LG_pibe, method = "L-BFGS-B", 
+                        lower = c(1, 0.001, 0), upper = c(100, 1, 100))
+
+training_sample_pibe <- groupedData(wDAPacum_cm ~ Edad | Nucleo, data = training_sample_pibe)
+
+Dmodelnlme_lg_PIBE <- nlme(
+  wDAPacum_cm ~ logistic_growth(Edad, D_max, k, t_mid),
+  data = training_sample_pibe,
+  fixed = D_max + k + t_mid ~ 1,
+  random = D_max + t_mid ~ 1 | id/Nucleo,
+  start = fit_optim_pibe$par,
+  correlation = corARMA(p = 1, q=0, form = ~ Edad | id/Nucleo),
+  control = nlmeControl(maxIter = 500, msMaxIter = 200)
+)
+
+
+summary(Dmodelnlme_lg_PIBE)
+
+res_NLME2_pibe <- residuals(Dmodelnlme_lg_PIBE, type = "normalized")
+pacf(res_NLME2_pibe)
+```
+```{r fitted curve for each core}
+# 1. Get predictions from the model (level = 1 for individual fits)
+training_sample_pibe$fit <- predict(Dmodelnlme_lg_PIBE, level = 1)
+
+# 2. Ensure grouping columns are factors
+training_sample_pibe$Nucleo <- as.factor(training_sample_pibe$Nucleo)
+training_sample_pibe$id <- as.factor(training_sample_pibe$id)
+
+# 3. Load ggplot2
+library(ggplot2)
+
+# 4. Plot
+ggplot(training_sample_pibe, aes(x = Edad, group = Nucleo, color = Nucleo)) +
+  geom_point(aes(y = wDAPacum_cm), alpha = 0.4, size = 1) +       # Observed data points
+  geom_line(aes(y = fit), size = 0.8) +                           # Model-predicted fits
+  facet_wrap(~ id) +                                             # Facet by tree
+  theme_minimal(base_size = 14) +
+  labs(
+    title = "Observed and Fitted Logistic Growth by Tree and Core",
+    subtitle = "Fitted using nonlinear mixed-effects model with AR(1) errors",
+    x = "Age (years)",
+    y = "Diameter at Breast Height (cm)",
+    color = "Core (Nucleo)"
+  ) +
+  theme(
+    legend.position = "bottom",
+    legend.title = element_text(face = "bold"),
+    strip.text = element_text(face = "bold")
+  )
+```
+
+
+```{r formatting models results}
+library(dplyr)
+library(tibble)
+library(kableExtra)
+library(webshot2)
+library(grid)
+library(png)
+
+# Extract summaries
+summary_PI <- summary(Dmodelnlme_lg_PI)$tTable
+summary_PIBE <- summary(Dmodelnlme_lg_PIBE)$tTable
+
+# Convert to data frames and rename columns
+df_PI <- as.data.frame(summary_PI) %>%
+  rownames_to_column("Parameter") %>%
+  rename(
+    Estimate = Value,
+    SE = "Std.Error",
+    DF = DF,
+    t = `t-value`,
+    p = `p-value`
+  ) %>%
+  mutate(
+    Parameter = case_when(
+      Parameter == "D_max" ~ "Dmax1",
+      Parameter == "k" ~ "k1",
+      Parameter == "t_mid" ~ "tmid1",
+      TRUE ~ Parameter
+    ),
+    Model = "Pure Plot"
+  )
+
+df_PIBE <- as.data.frame(summary_PIBE) %>%
+  rownames_to_column("Parameter") %>%
+  rename(
+    Estimate = Value,
+    SE = "Std.Error",
+    DF = DF,
+    t = `t-value`,
+    p = `p-value`
+  ) %>%
+  mutate(
+    Parameter = case_when(
+      Parameter == "D_max" ~ "Dmax2",
+      Parameter == "k" ~ "k2",
+      Parameter == "t_mid" ~ "tmid2",
+      TRUE ~ Parameter
+    ),
+    Model = "Mixed Plot"
+  )
+
+# Combine the two datasets into long format
+summary_long <- bind_rows(df_PI, df_PIBE) %>%
+  select(Parameter, Model, Estimate, SE, DF, t, p) %>%
+  arrange(Parameter)
+
+# Round numeric columns for readability
+summary_long <- summary_long %>%
+  mutate(across(where(is.numeric), ~ round(.x, 4)))
+
+# View the long format table
+print(summary_long)
+
+# OPTIONAL: Display in kable
+summary_long %>%
+  kbl(caption = "Fixed Effects from Growth Models in Long Format") %>%
+  kable_styling(full_width = FALSE, position = "center") %>%
+  column_spec(1, bold = TRUE)
+
+
+############
+
+# Create the HTML table from the long format dataframe
+table_html <- summary_long %>%
+  kbl(
+    caption = "Table: Fixed Effects from Growth Models (Long Format)",
+    col.names = c("Parameter", "Model", "Estimate", "SE", "DF", "t-value", "p-value"),
+    align = c("l", "l", "r", "r", "r", "r", "r")
+  ) %>%
+  kable_styling(full_width = FALSE, position = "center") %>%
+  column_spec(1, bold = TRUE) %>%
+  row_spec(0, bold = TRUE, background = "#D3D3D3") # bold and shade header row
+
+# # Save table as an image temporarily (make sure webshot2 & phantomjs are installed)
+# save_kable(table_html, file = "table_summary.png", zoom = 8)  # zoom 3 instead of 2 for bigger image
+# 
+# # Load the image as a grob for use in ggplot
+# table_grob <- rasterGrob(png::readPNG("table_summary.png"), interpolate = TRUE)
+# 
+# # Create a ggplot object with the table image
+# table_plot <- ggplot() +
+#   annotation_custom(table_grob) +
+#   theme_void()
+
+```
+
+
+
+```{r plotting the curves in the same graph}
+# Add predictions to each dataset
+training_sample_pi$Nucleo <- factor(as.character(training_sample_pi$Nucleo))
+training_sample_pibe$Nucleo <- factor(as.character(training_sample_pibe$Nucleo))
+
+all_levels <- union(levels(training_sample_pi$Nucleo), levels(training_sample_pibe$Nucleo))
+
+training_sample_pi$Nucleo <- factor(training_sample_pi$Nucleo, levels = all_levels, ordered = TRUE)
+training_sample_pibe$Nucleo <- factor(training_sample_pibe$Nucleo, levels = all_levels, ordered = TRUE)
+# Combine
+combined_data <- rbind(training_sample_pi, training_sample_pibe)
+training_sample_pi$fit <- predict(Dmodelnlme_lg_PI)
+training_sample_pi$Parcela <- "Pure Plot"
+training_sample_pibe$fit <- predict(Dmodelnlme_lg_PIBE)
+training_sample_pibe$Parcela <- "Mixed Plot"
+combined_data <- rbind(training_sample_pi, training_sample_pibe)
+str(training_sample_pi$id)
+str(training_sample_pibe$id)
+library(ggplot2)
+
+
+library(ggplot2)
+
+# Use colorblind-friendly palette
+colors <- c("Pure Plot" = "#1b9e77", "Mixed Plot" = "#d95f02")
+
+growth_plot <- ggplot(combined_data, aes(x = Edad, color = Parcela, group = Nucleo)) +
+  
+  # Observed points (raw data) with low alpha
+  geom_point(aes(y = wDAPacum_cm), alpha = 0.3, size = 1, shape = 16) +
+  
+  # Predicted trajectories with thinner lines
+  geom_line(aes(y = fit), alpha = 0.7, size = 0.7) +
+  
+  scale_color_manual(values = colors) +
+  
+  labs(
+    title = "Observed and Predicted Growth Trajectories by Core",
+    subtitle = "Comparison of Pure and Mixed Plots",
+    x = "Age (years)",
+    y = "Diameter at Breast Height (cm)",
+    color = "Plot Type"
+  ) +
+  
+  theme_classic(base_size = 14) +
+  
+  theme(
+    plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+    plot.subtitle = element_text(size = 13, hjust = 0.5, margin = margin(b = 10)),
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 12),
+    legend.position = "top",
+    legend.title = element_text(face = "bold"),
+    panel.grid.major = element_line(color = "gray90"),
+    panel.grid.minor = element_blank()
+  )
+ggsave("growth_plot.png", plot = growth_plot, width = 10, height = 6, dpi = 300)
+
+growth_plot
+```
+```{r plotting the curves per plot}
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+
+# Filter by plot type
+pure_data <- combined_data %>% filter(Parcela == "Pure Plot")
+mixed_data <- combined_data %>% filter(Parcela == "Mixed Plot")
+
+# -------- PURE PLOT --------
+p_pure <- ggplot(pure_data, aes(x = Edad, group = Nucleo, color = Nucleo)) +
+  geom_point(aes(y = wDAPacum_cm), alpha = 0.4, size = 1) +
+  geom_line(aes(y = fit), size = 0.7) +
+  labs(
+    title = "Pure Plot",
+    x = "Age (years)",
+    y = "Diameter at Breast Height (cm)",
+    color = "Tree ID"
+  ) +
+  theme_classic(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 12),
+    legend.position = "right",
+    legend.title = element_text(face = "bold"),
+    panel.grid.major = element_line(color = "gray90")
+  )
+
+# -------- MIXED PLOT --------
+p_mixed <- ggplot(mixed_data, aes(x = Edad, group = Nucleo, color = Nucleo)) +
+  geom_point(aes(y = wDAPacum_cm), alpha = 0.4, size = 1) +
+  geom_line(aes(y = fit), size = 0.7) +
+  labs(
+    title = "Mixed Plot",
+    x = "Age (years)",
+    y = "Diameter at Breast Height (cm)",
+    color = "Tree ID"
+  ) +
+  theme_classic(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 12),
+    legend.position = "right",
+    legend.title = element_text(face = "bold"),
+    panel.grid.major = element_line(color = "gray90")
+  )
+
+# -------- Combine and Save --------
+combined_plot <- p_pure + p_mixed + plot_layout(ncol = 2)
+
+ggsave("growth_plot_by_id.png", plot = combined_plot, width = 14, height = 6, dpi = 300)
+
+# Display
+combined_plot
+```
+
+
+
+```{r fitting the joint model}
+# Add a grouping column to each dataset
+# Step 1: Add a column indicating the plot type
+training_sample_pi$plot_type <- "PI"
+training_sample_pibe$plot_type <- "PIBE"
+# Step 2: Combine tsth datasets
+training_sample_combined <- rbind(training_sample_pi, training_sample_pibe)
+# Step 3: Create dummy variables
+training_sample_combined$PIBE <- ifelse(training_sample_combined$plot_type == "PIBE", 1, 0)
+training_sample_combined$PI <- ifelse(training_sample_combined$plot_type == "PI", 1, 0)
+
+# Step 4: Check that it worked
+head(training_sample_combined[, c("plot_type", "PIBE", "PI")])
+
+logistic_growth_grouped <- function(Edad, D_max, k, t_mid, group) {
+  ifelse(group == "PIBE",
+         D_max[1] / (1 + exp(-k[1] * (Edad - t_mid[1]))),
+         D_max[2] / (1 + exp(-k[2] * (Edad - t_mid[2])))
+  )
+}
+
+fit_optim_pibe$par
+fit_optim$par
+
+joint_model <- nlme(
+  wDAPacum_cm ~ (PIBE * D_max1 + PI * D_max2) / 
+                (1 + exp(-(PIBE * k1 + PI * k2) * 
+                          (Edad - (PIBE * tmid1 + PI * tmid2)))),
+  data = training_sample_combined,
+  fixed = D_max1 + D_max2 + k1 + k2 + tmid1 + tmid2 ~ 1,
+  random = D_max1 + tmid1 ~ 1 | plot_type/id/Nucleo,  # adjust as needed
+  correlation = corARMA(p = 1, q = 0, form = ~ Edad | plot_type/id/Nucleo),
+  start = c(D_max1 = 24, D_max2 = 24, k1 = 0.07, k2 = 0.09, tmid1 = 28, tmid2 = 24),
+  control = nlmeControl(maxIter = 700, msMaxIter = 300)
+)
+
+
+
+summary(joint_model)
+
+# # Observed values
+observed <- validation_sample_combined$wDAPacum_cm
+# 
+# # Fitted values from the model
+# fitted_vals <- fitted(joint_model, newdata=validation_sample_combined)
+# 
+# # Calculate NSE
+# nse_value <- NSE(fitted_vals, observed)
+# 
+# print(nse_value)
+# residuals_nlme <- resid(joint_model, type = "normalized")
+
+# Plot ACF
+acf(residuals_nlme, main = "ACF of Normalized Residuals")
+
+# Plot PACF
+pacf(residuals_nlme, main = "PACF of Normalized Residuals")
+
+```
+
+
+
+
+## 📊 6. Evaluación de Modelos (AIC, BIC, RMSE, MAPE, NSE, Bias, Normalidad, Autocorrelación, Heterocedasticidad)
+```{r models metrics evaluation for training sample}
+# Load necessary packages
+library(nlme)
+library(dplyr)
+
+# Function to compute metrics: RMSE, Bias, Efficiency
+calculate_model_metrics <- function(model, data, response_var, level = 0) {
+  # Predicted values
+  predictions <- predict(model, newdata = data, level = level)
+  
+  # Observed values
+  actuals <- data[[response_var]]
+  
+  # Residuals
+  residuals <- actuals - predictions
+  
+  # Metrics
+  rmse_val <- sqrt(mean(residuals^2))
+  bias_val <- mean(predictions - actuals)
+  
+  ef_val <- 1 - sum((actuals - predictions)^2) / sum((actuals - mean(actuals))^2)
+  
+  # AIC and BIC from model object
+  aic_val <- AIC(model)
+  bic_val <- BIC(model)
+  
+  return(c(
+    RMSE = rmse_val,
+    Bias = bias_val,
+    Efficiency = ef_val,
+    AIC = aic_val,
+    BIC = bic_val
+  ))
+}
+
+# Compute metrics for both models
+metrics_PI <- calculate_model_metrics(Dmodelnlme_lg_PI, training_sample_pi, "wDAPacum_cm")
+metrics_PIBE <- calculate_model_metrics(Dmodelnlme_lg_PIBE, training_sample_pibe, "wDAPacum_cm")
+metrics_joint <- calculate_model_metrics(joint_model, training_sample_combined, "wDAPacum_cm")
+# Create a summary table
+metrics_table <- data.frame(
+  Metric = names(metrics_PI),
+  Dmodelnlme_lg_PI = round(metrics_PI, 4),
+  Dmodelnlme_lg_PIBE = round(metrics_PIBE, 4), 
+  joint_model=round(metrics_joint, 4)
+)
+
+# Print the table
+print(metrics_table, row.names = FALSE)
+
+```
+```{r joint model metrics evaluation for the training sample}
+
+library(hydroGOF) # for NSE
+library(Metrics)  # for MAE
+
+# Predicted and observed values
+fitted_vals <- predict(joint_model, type = "response")
+observed <- training_sample_combined$wDAPacum_cm
+
+# Metrics
+nse_val <- NSE(fitted_vals, observed)
+mae_val <- mae(observed, fitted_vals)
+rmse_val <- sqrt(mean((observed - fitted_vals)^2))
+mape_val <- mean(abs((observed - fitted_vals) / ifelse(observed == 0, NA, observed)), na.rm = TRUE) * 100
+r2_val <- cor(fitted_vals, observed)^2
+bias_val <- mean(fitted_vals - observed)
+
+# AIC and BIC
+aic_val <- AIC(joint_model)
+bic_val <- BIC(joint_model)
+
+# Create metrics table
+metrics_table <- data.frame(
+  Metric = c("NSE", "MAE", "RMSE", "MAPE (%)", "R²", "Bias", "AIC", "BIC"),
+  Value = c(nse_val, mae_val, rmse_val, mape_val, r2_val, bias_val, aic_val, bic_val)
+)
+
+print(metrics_table)
+ 
+```
+
+
+## 📊 7. Evaluación en Datos de Validación (AIC no aplica, pero RMSE, MAPE, NSE, Sesgo y pruebas estadísticas sí)
+
+```{r evaluacion-validacion, warning=FALSE, message=FALSE}
+library(nlme)
+library(Metrics)
+library(hydroGOF)
+library(lmtest)
+library(car)
+library(dplyr)
+
+safe_mape <- function(actual, predicted) {
+  valid <- actual != 0 & !is.na(actual) & !is.na(predicted)
+  if (any(valid)) {
+    return(mean(abs((actual[valid] - predicted[valid]) / actual[valid])) * 100)
+  } else {
+    return(NA)  # return NA if all values are 0 or missing
+  }
+}
+
+# Define evaluation function for external validation
+evaluate_model_validation <- function(model, validation_data, response_var, model_name) {
+  # Predict on validation data
+  predicted_vals <- predict(model, newdata = validation_data)
+  observed_vals <- validation_data[[response_var]]
+  residuals_vals <- observed_vals - predicted_vals
+
+  # Basic metrics
+  rmse_val <- sqrt(mean((observed_vals - predicted_vals)^2))
+  mape_val <- safe_mape(observed_vals, predicted_vals)
+  nse_val <- NSE(predicted_vals, observed_vals)
+  bias_val <- mean(predicted_vals - observed_vals)
+
+  # AIC and BIC (only valid on training data, so use model directly)
+  aic_val <- AIC(model)
+  bic_val <- BIC(model)
+
+  # Shapiro-Wilk test for residuals
+  shapiro_p <- tryCatch({
+    if (length(residuals_vals) >= 3 && length(residuals_vals) <= 5000) {
+      shapiro.test(residuals_vals)$p.value
+    } else {
+      NA
+    }
+  }, error = function(e) NA)
+
+  # Durbin-Watson (autocorrelation)
+  dw <- tryCatch({
+    lm_model <- lm(observed_vals ~ predicted_vals)
+    test <- dwtest(lm_model)
+    list(stat = test$statistic[[1]], p = test$p.value)
+  }, error = function(e) list(stat = NA, p = NA))
+
+  # Breusch-Pagan (heteroscedasticity)
+  bp <- tryCatch({
+    lm_model <- lm(observed_vals ~ predicted_vals)
+    test <- bptest(lm_model)
+    list(stat = test$statistic[[1]], p = test$p.value)
+  }, error = function(e) list(stat = NA, p = NA))
+
+  # Return results
+  data.frame(
+    Model = model_name,
+    RMSE = rmse_val,
+    MAPE = mape_val,
+    NSE = nse_val,
+    Bias = bias_val,
+    Shapiro_p = shapiro_p,
+    DW_stat = dw$stat,
+    DW_p = dw$p,
+    BP_stat = bp$stat,
+    BP_p = bp$p
+  )
+}
+
+
+# Apply the function to both validation datasets
+results_val_PI <- evaluate_model_validation(Dmodelnlme_lg_PI, validation_sample_pi, "wDAPacum_cm", "PI (Validation)")
+results_val_PIBE <- evaluate_model_validation(Dmodelnlme_lg_PIBE, validation_sample_pibe, "wDAPacum_cm", "PIBE (Validation)")
+
+# Combine and display the results
+results_validation_table <- bind_rows(results_val_PI, results_val_PIBE)
+
+print(results_validation_table)
+
+```
+
+
+```{r joint model metrics evaluation for validation sample}
+
+validation_sample_pi$plot_type <- "PI"
+validation_sample_pibe$plot_type <- "PIBE"
+validation_sample_combined <-rbind(validation_sample_pi, validation_sample_pibe)
+
+validation_sample_combined$PIBE <- ifelse(validation_sample_combined$plot_type == "PIBE", 1, 0)
+validation_sample_combined$PI <- ifelse(validation_sample_combined$plot_type == "PI", 1, 0)
+library(nlme)
+library(Metrics)
+library(hydroGOF)
+library(lmtest)
+library(car)
+library(dplyr)
+
+evaluate_nlme_joint_model <- function(model, validation_data, response_var, model_name) {
+  # Predict using fixed effects only
+  predicted_vals <- predict(model, newdata = validation_data, level = 0)
+  observed_vals <- validation_data[[response_var]]
+  
+  # Remove any NA values
+  valid_idx <- which(!is.na(predicted_vals) & !is.na(observed_vals))
+  predicted_vals <- predicted_vals[valid_idx]
+  observed_vals <- observed_vals[valid_idx]
+  
+  # Ensure vectors are the same length
+  if (length(predicted_vals) != length(observed_vals) || length(predicted_vals) < 2) {
+    stop("Mismatch or too few valid prediction-observation pairs")
+  }
+
+  # Avoid division by zero for MAPE
+  non_zero <- observed_vals != 0
+  mape_val <- if (any(non_zero)) {
+    mean(abs((observed_vals[non_zero] - predicted_vals[non_zero]) / observed_vals[non_zero])) * 100
+  } else {
+    NA
+  }
+
+  # Calculate other metrics
+  rmse_val <- sqrt(mean((observed_vals - predicted_vals)^2))
+  nse_val <- hydroGOF::NSE(predicted_vals, observed_vals)
+  bias_val <- mean(predicted_vals - observed_vals)
+
+  # Use residuals from validation set for normality tests, not model residuals
+  residuals_vals <- observed_vals - predicted_vals
+
+  # Shapiro test
+  shapiro_p <- tryCatch({
+    if (length(residuals_vals) >= 3 && length(residuals_vals) <= 5000) {
+      shapiro.test(residuals_vals)$p.value
+    } else {
+      NA
+    }
+  }, error = function(e) NA)
+
+  # Linear model for diagnostics
+  lm_model <- tryCatch(lm(observed_vals ~ predicted_vals), error = function(e) NULL)
+
+  # Durbin-Watson
+  dw <- tryCatch({
+    test <- lmtest::dwtest(lm_model)
+    list(stat = test$statistic[[1]], p = test$p.value)
+  }, error = function(e) list(stat = NA, p = NA))
+
+  # Breusch-Pagan
+  bp <- tryCatch({
+    test <- bptest(lm_model)
+    list(stat = test$statistic[[1]], p = test$p.value)
+  }, error = function(e) list(stat = NA, p = NA))
+
+  # Return results
+  data.frame(
+    Model = model_name,
+    AIC=AIC(model), 
+    BIC=BIC(model),
+    RMSE = rmse_val,
+    MAPE = mape_val,
+    NSE = nse_val,
+    Bias = bias_val,
+    Shapiro_p = shapiro_p,
+    DW_stat = dw$stat,
+    DW_p = dw$p,
+    BP_stat = bp$stat,
+    BP_p = bp$p
+  )
+}
+
+# Example usage:
+results_val_joint <- evaluate_nlme_joint_model(
+  model = joint_model,
+  validation_data = validation_sample_combined,
+  response_var = "wDAPacum_cm",
+  model_name = "Joint_nlme_model"
+)
+
+print(results_val_joint)
+```
+
+
+
+## 8. Evaluación Gráfica de los modelosw
+
+```{r acf_pacf_lg_PI, echo=TRUE, message=FALSE, warning=FALSE}
+library(nlme)
+library(ggplot2)
+library(patchwork)
+
+# Extract normalized residuals and fitted values from Dmodelnlme_lg_PI
+residuals_df <- data.frame(
+  residuals = residuals(Dmodelnlme_lg_PI, type = "normalized"),
+  fitted = fitted(Dmodelnlme_lg_PI)
+)
+
+# --- A. Normal Q-Q Plot ---
+plot_qq <- ggplot(residuals_df, aes(sample = residuals)) +
+  stat_qq() +
+  stat_qq_line(color = "red") +
+  labs(x = "Theoretical Quantiles", y = "Residual Quantiles") +
+  theme_bw(base_size = 12)
+
+# --- B. Residuals vs Fitted Plot (Homoscedasticity) ---
+plot_res_fitted <- ggplot(residuals_df, aes(x = fitted, y = residuals)) +
+  geom_point(alpha = 0.7) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(x = "Predicted Diameter Values", y = "Standardized Residuals") +
+  scale_x_continuous(breaks = seq(0, 200, 50)) +
+  theme_bw(base_size = 12)
+
+# --- C. Autocorrelation Function (ACF) Plot ---
+acf_obj <- acf(residuals_df$residuals, plot = FALSE)
+acf_df <- with(acf_obj, data.frame(lag = lag, acf = acf))
+conf_int <- 1.96 / sqrt(length(residuals_df$residuals))
+
+plot_acf <- ggplot(acf_df, aes(x = lag, y = acf)) +
+  geom_hline(yintercept = 0, color = "gray30") +
+  geom_segment(aes(xend = lag, yend = 0), color = "black", linewidth = 0.6) +
+  geom_hline(yintercept = c(-conf_int, conf_int), linetype = "dashed", color = "blue") +
+  labs(x = "Lag", y = "Autocorrelation Function") +
+  ylim(-0.5, 1) +
+  scale_x_continuous(breaks = seq(0, 30, 5)) +
+  theme_bw(base_size = 12)
+
+# --- D. Partial Autocorrelation Function (PACF) Plot ---
+pacf_obj <- acf(residuals_df$residuals, type = "partial", plot = FALSE)
+pacf_df <- with(pacf_obj, data.frame(lag = lag, acf = acf))
+
+plot_pacf <- ggplot(pacf_df, aes(x = lag, y = acf)) +
+  geom_hline(yintercept = 0, color = "gray30") +
+  geom_segment(aes(xend = lag, yend = 0), color = "black", linewidth = 0.6) +
+  geom_hline(yintercept = c(-conf_int, conf_int), linetype = "dashed", color = "blue") +
+  labs(x = "Lag", y = "Partial Autocorrelation Function") +
+  ylim(-0.5, 1) +
+  scale_x_continuous(breaks = seq(0, 30, 5)) +
+  theme_bw(base_size = 12)
+
+# --- Combine all plots with tags ---
+residual_diagnostics_fig1 <- (plot_qq + plot_res_fitted) /
+                            (plot_acf + plot_pacf) +
+  plot_annotation(
+    tag_levels = "A",
+    theme = theme(
+      plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+      plot.tag = element_text(size = 14, face = "bold")
+    )
+  )
+
+# Save the figure as a high-resolution PNG
+ggsave(
+  filename = "Residual_Diagnostics_PI_Model.png",
+  plot = residual_diagnostics_fig1,
+  width = 12,
+  height = 10,
+  dpi = 300
+)
+
+# Display the figure
+residual_diagnostics_fig1
+```
+
+---
+
+```{r residual_analysis_lg_PIBE, echo=TRUE, message=FALSE, warning=FALSE}
+# --- Residual Analysis for Dmodelnlme_lg_PIBE ---
+
+# Load required libraries
+library(ggplot2)
+library(patchwork)
+
+# Create a dataframe with normalized residuals and fitted values
+residuals_df <- data.frame(
+  residuals = residuals(Dmodelnlme_lg_PIBE, type = "normalized"),
+  fitted = fitted(Dmodelnlme_lg_PIBE)
+)
+
+# --- A. QQ Plot (Normality) ---
+plot_qq <- ggplot(residuals_df, aes(sample = residuals)) +
+  stat_qq() +
+  stat_qq_line(color = "red") +
+  labs(x = "Theoretical Quantiles", y = "Normalized Residuals") +
+  theme_bw(base_size = 12)
+
+# --- B. Residuals vs Fitted Plot (Homoscedasticity) ---
+plot_res_fitted <- ggplot(residuals_df, aes(x = fitted, y = residuals)) +
+  geom_point(alpha = 0.7) +
+  geom_hline(yintercept = 0, color = "black", linetype = "dashed") +
+  labs(x = "Fitted Values", y = "Normalized Residuals") +
+  scale_x_continuous(breaks = seq(0, 200, by = 50)) +
+  theme_bw(base_size = 12)
+
+# --- C. Autocorrelation Function (ACF) Plot ---
+acf_obj <- acf(residuals_df$residuals, plot = FALSE)
+acf_df <- with(acf_obj, data.frame(lag = lag, acf = acf))
+conf_int <- 1.96 / sqrt(length(residuals_df$residuals))
+
+plot_acf <- ggplot(acf_df, aes(x = lag, y = acf)) +
+  geom_hline(yintercept = 0, color = "gray30") +
+  geom_segment(aes(xend = lag, yend = 0), color = "black", linewidth = 0.6) +
+  geom_hline(yintercept = c(-conf_int, conf_int), linetype = "dashed", color = "blue") +
+  labs(x = "Lag", y = "Autocorrelation (ACF)") +
+  ylim(-0.5, 1) +
+  scale_x_continuous(breaks = seq(0, 30, 5)) +
+  theme_bw(base_size = 12)
+
+# --- D. Partial Autocorrelation Function (PACF) Plot ---
+pacf_obj <- acf(residuals_df$residuals, type = "partial", plot = FALSE)
+pacf_df <- with(pacf_obj, data.frame(lag = lag, acf = acf))
+
+plot_pacf <- ggplot(pacf_df, aes(x = lag, y = acf)) +
+  geom_hline(yintercept = 0, color = "gray30") +
+  geom_segment(aes(xend = lag, yend = 0), color = "black", linewidth = 0.6) +
+  geom_hline(yintercept = c(-conf_int, conf_int), linetype = "dashed", color = "blue") +
+  labs(x = "Lag", y = "Partial Autocorrelation (PACF)") +
+  ylim(-0.5, 1) +
+  scale_x_continuous(breaks = seq(0, 30, 5)) +
+  theme_bw(base_size = 12)
+
+# --- Combine All Plots with Tags A, B, C, D ---
+residual_diagnostics_fig2<-(plot_qq + plot_res_fitted) / (plot_acf + plot_pacf) +
+  plot_annotation(tag_levels = "A")
+
+
+# Save the figure as a high-resolution PNG
+ggsave(
+  filename = "Residual_Diagnostics_PIBE_Model.png",
+  plot = residual_diagnostics_fig2,
+  width = 12,
+  height = 10,
+  dpi = 300
+)
+
+# Display the figure
+residual_diagnostics_fig2
+```
+```{r graphical evaluation of joint model}
+library(nlme)
+library(ggplot2)
+library(patchwork)
+
+# Extract normalized residuals and fitted values from joint_model
+residuals_df <- data.frame(
+  residuals = residuals(joint_model, type = "normalized"),
+  fitted = fitted(joint_model)
+)
+
+# --- A. Normal Q-Q Plot ---
+plot_qq <- ggplot(residuals_df, aes(sample = residuals)) +
+  stat_qq() +
+  stat_qq_line(color = "red") +
+  labs(x = "Theoretical Quantiles", y = "Standardized Residuals") +
+  theme_bw(base_size = 12)
+
+# --- B. Residuals vs Fitted Plot (Homoscedasticity) ---
+plot_res_fitted <- ggplot(residuals_df, aes(x = fitted, y = residuals)) +
+  geom_point(alpha = 0.6) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(x = "Fitted Values", y = "Standardized Residuals") +
+  scale_x_continuous(breaks = seq(0, 200, 50)) +
+  theme_bw(base_size = 12)
+
+# --- C. Autocorrelation Function (ACF) Plot ---
+acf_obj <- acf(residuals_df$residuals, plot = FALSE)
+acf_df <- with(acf_obj, data.frame(lag = lag, acf = acf))
+conf_int <- 1.96 / sqrt(length(residuals_df$residuals))
+
+plot_acf <- ggplot(acf_df, aes(x = lag, y = acf)) +
+  geom_hline(yintercept = 0, color = "gray30") +
+  geom_segment(aes(xend = lag, yend = 0), color = "black", linewidth = 0.6) +
+  geom_hline(yintercept = c(-conf_int, conf_int), linetype = "dashed", color = "blue") +
+  labs(x = "Lag", y = "Autocorrelation (ACF)") +
+  ylim(-0.5, 1) +
+  scale_x_continuous(breaks = seq(0, 30, 5)) +
+  theme_bw(base_size = 12)
+
+# --- D. Partial Autocorrelation Function (PACF) Plot ---
+pacf_obj <- acf(residuals_df$residuals, type = "partial", plot = FALSE)
+pacf_df <- with(pacf_obj, data.frame(lag = lag, acf = acf))
+
+plot_pacf <- ggplot(pacf_df, aes(x = lag, y = acf)) +
+  geom_hline(yintercept = 0, color = "gray30") +
+  geom_segment(aes(xend = lag, yend = 0), color = "black", linewidth = 0.6) +
+  geom_hline(yintercept = c(-conf_int, conf_int), linetype = "dashed", color = "blue") +
+  labs(x = "Lag", y = "Partial Autocorrelation (PACF)") +
+  ylim(-0.5, 1) +
+  scale_x_continuous(breaks = seq(0, 30, 5)) +
+  theme_bw(base_size = 12)
+
+# --- Combine all plots with labels ---
+residual_diagnostics_fig3 <- (plot_qq + plot_res_fitted) / (plot_acf + plot_pacf) +
+  plot_annotation(tag_levels = "A")
+
+
+# Save the figure as a high-resolution PNG
+ggsave(
+  filename = "Residual_Diagnostics_Joint_Model.png",
+  plot = residual_diagnostics_fig3,
+  width = 12,
+  height = 10,
+  dpi = 300
+)
+
+# Display the figure
+residual_diagnostics_fig3
+
+```
+
+
+
+
+```{r bootstrap block definition}
+library(dplyr)
+
+block_bootstrap <- function(data, block_size = 3) {
+  data %>%
+    group_by(id) %>%
+    arrange(Edad) %>%
+    mutate(block = ceiling(row_number() / block_size)) %>%
+    group_split() %>%
+    lapply(function(df_tree) {
+      blocks <- split(df_tree, df_tree$block)
+      sampled_blocks <- sample(blocks, length(blocks), replace = TRUE)
+      bind_rows(sampled_blocks)
+    }) %>%
+    bind_rows() %>%
+    ungroup() %>%
+    select(-block)
+}
+```
+
+```{r bootstrap analysis,include=FALSE, message=FALSE, warning=FALSE}
+n_boot <- 200
+param_diffs <- list()
+
+for (i in 1:n_boot) {
+  cat("Bootstrap", i, "\n")
+
+  # Resample with block bootstrap
+  boot_PI <- block_bootstrap(training_sample_pi, block_size = 3)
+  boot_PIBE <- block_bootstrap(training_sample_pibe, block_size = 3)
+
+  # Fit models WITHOUT corARMA
+  fit_PI <- try(nlme(
+    wDAPacum_cm ~ logistic_growth(Edad, D_max, k, t_mid),
+    data = boot_PI,
+    fixed = D_max + k + t_mid ~ 1,
+    random = D_max + t_mid ~ 1 | id,
+    start = fixef(Dmodelnlme_lg_PI)
+  ), silent = TRUE)  # <- this parenthesis and silent=TRUE were missing
+
+  fit_PIBE <- try(nlme(
+    wDAPacum_cm ~ logistic_growth(Edad, D_max, k, t_mid),
+    data = boot_PIBE,
+    fixed = D_max + k + t_mid ~ 1,
+    random = D_max + t_mid ~ 1 | id,
+    start = fixef(Dmodelnlme_lg_PIBE)
+  ), silent = TRUE)
+
+  if (!inherits(fit_PI, "try-error") && !inherits(fit_PIBE, "try-error")) {
+    fix_PI <- fixef(fit_PI)
+    fix_PIBE <- fixef(fit_PIBE)
+    param_diffs[[i]] <- fix_PI - fix_PIBE
+  }
+}
+
+# Combine and summarize
+param_diffs_df <- do.call(rbind, param_diffs)
+summary_df <- data.frame(
+  mean = colMeans(param_diffs_df, na.rm = TRUE),
+  sd = apply(param_diffs_df, 2, sd, na.rm = TRUE),
+  CI_lower = apply(param_diffs_df, 2, quantile, 0.025, na.rm = TRUE),
+  CI_upper = apply(param_diffs_df, 2, quantile, 0.975, na.rm = TRUE)
+)
+
+# Round and format the summary table for display
+summary_table <- summary_df %>%
+  tibble::rownames_to_column("Parameter") %>%
+  dplyr::mutate(across(where(is.numeric), ~ round(.x, 3)))  # round to 3 decimals
+knitr::kable(summary_table, caption = "Summary of Parameter Differences", align = "c")
+library(gt)
+
+summary_table %>%
+  gt() %>%
+  tab_header(
+    title = "Summary of Parameter Differences"
+  ) %>%
+  fmt_number(
+    columns = 2:5, decimals = 3
+  )
+summary_table
+
+```
+
+
+```{r bootstrap analysis graph}
+# Make sure dplyr and ggplot2 are loaded
+library(dplyr)
+library(ggplot2)
+library(tibble)
+
+# Rename rownames to column 'param'
+summary_df <- summary_df %>%
+  rownames_to_column("parameter")
+
+# Optional: order parameters if needed
+summary_df$param <- factor(summary_df$param, levels = c("D_max", "k", "t_mid"))
+
+# Plot
+ggplot(summary_df, aes(x = param, y = mean)) +
+  geom_point(size = 3, color = "black") +
+  geom_errorbar(aes(ymin = CI_lower, ymax = CI_upper), width = 0.15, color = "black", size = 0.7) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red", size = 0.8) +
+  theme_classic(base_size = 14) +
+  labs(
+    title = "Bootstrap Differences in Parameter Estimates\n(Pure Plot - Mixed Plot)",
+    y = "Difference in Parameter Estimate",
+    x = "Parameter",
+    caption = "Red dashed line indicates zero difference"
+  ) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 12),
+    axis.line = element_line(size = 0.4),
+    panel.grid.major = element_line(color = "gray90"),
+    panel.grid.minor = element_blank()
+  ) +
+  scale_y_continuous(
+    breaks = scales::pretty_breaks(n = 6)
+  )
+```
+
+```{r preparation of dataset for comparison}
+pi_dataset_pineallyears <- read.csv("D:\\Desktop\\Anillos_cofechar\\New\\coleccion\\df_pi_allyears.csv")
+pioa_dataset_pineallyears <- read.csv("D:\\Desktop\\Anillos_cofechar\\New\\coleccion\\df_pioa_allyears.csv")
+
+pi_dataset_pineallyears <- pi_dataset_pineallyears %>%
+  mutate(Edad = case_when(
+    year == 2016 ~ 53,
+    year == 2022 ~ 59,
+    year == 2024 ~ 61,
+    year == 2025 ~ 62,
+    TRUE ~ NA_real_ # Assign NA for years not specified
+  ))
+pioa_dataset_pineallyears <- pioa_dataset_pineallyears %>%
+  mutate(Edad = case_when(
+    year == 2016 ~ 53,
+    year == 2022 ~ 59,
+    year == 2024 ~ 61,
+    year == 2025 ~ 62,
+    TRUE ~ NA_real_ # Assign NA for years not specified
+  ))
+```
+
+
+```{r comparison of aboslute values }
+#and collected with crossdating
+#Combine the two datasets for comparing absolute values
+
+Pi_mydata_MB<- Pi_mydata_MB %>%
+  mutate(across(where(is.factor), as.character))
+Pibe_mydata_MB <- Pibe_mydata_MB %>%
+  mutate(across(where(is.factor), as.character))
+
+combined_ring_sample <- bind_rows(Pi_mydata_MB, Pibe_mydata_MB)
+pi_dataset_filtered <- pi_dataset_pineallyears %>%
+ semi_join(Pi_mydata_MB, by = c("ID" = "id"))
+pibe_dataset_filtered <- pioa_dataset_pineallyears %>%
+ semi_join(Pibe_mydata_MB, by = c("ID" = "id"))
+combined_caliper_sample <-bind_rows(pi_dataset_filtered, pibe_dataset_filtered)
+
+ggplot() +
+  geom_point(data = combined_ring_sample,
+             aes(x= Edad, y= wDAPacum_cm)) +
+  geom_point(data = combined_caliper_sample,
+           aes(x= Edad, y= dbh_cm), color= 'blue')
+
+fict1<- combined_ring_sample %>%
+  dplyr::filter(Edad >= 53 & Edad <= 62) %>%
+  mutate(metd= 'Dendro') %>%
+  rename(DAP= wDAPacum_cm) %>%
+  rename(plot= Parcela)%>%
+  mutate(plot= if_else(plot == 'pi', 'Pure Plot', 'Mixed Plot'))%>%
+  as_tibble(.) %>%
+  select(c(Edad, metd, DAP, id, plot))
+
+fict2<- combined_caliper_sample %>%
+  mutate(metd= 'Forc') %>%
+  mutate(plot= if_else(plot == 'pi', 'Pure Plot', 'Mixed Plot'))%>%
+  rename(id=ID) %>%
+  rename(DAP= dbh_cm) %>%
+  select(c(Edad, metd, DAP, id, plot))
+
+# Check common IDs
+intersect(fict1$id, fict2$id)
+
+# Check common Edad
+intersect(fict1$Edad, fict2$Edad)
+
+# Check plot names
+unique(fict1$plot)
+unique(fict2$plot)
+
+combined_data <- bind_rows(fict1, fict2)
+
+library(ggplot2)
+library(Hmisc)  # for mean_cl_boot (optional)
+
+ggplot(combined_data, aes(x = metd, y = DAP, fill = metd)) +
+  geom_boxplot(
+    alpha = 0.8,
+    width = 0.6,
+    outlier.shape = 21,
+    outlier.fill = "white",
+    outlier.color = "black"
+  ) +
+  labs(
+    title = "Comparison of DAP Estimates: Growth Ring vs. Caliper Methods",
+    x = "Measurement Method",
+    y = "Diameter at Breast Height (cm)"
+  ) +
+  scale_fill_manual(values = c("Dendro" = "#1f78b4", "Forc" = "#33a02c")) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 11),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_blank(),
+    legend.position = "none"
+  )
+
+anova<- aov(DAP ~ metd, data = combined_data)
+summary(anova)
+library(emmeans)
+emmeans(anova, pairwise ~ metd)
+
+paired_diameters <- inner_join(
+  fict1,
+  fict2,
+  by = c("id", "plot", "Edad"),
+  suffix = c("_dendro", "_forc")
+) %>%
+  mutate(diff = DAP_forc - DAP_dendro,
+         mean_dap = (DAP_forc + DAP_dendro)/2)
+
+# Now run the paired t-test
+t.test(paired_diameters_clean$DAP_forc, paired_diameters_clean$DAP_dendro, paired = TRUE)
+
+
+
+# Reshape paired_diameters to long format
+long_data <- paired_diameters %>%
+  select(id, plot, Edad, DAP_dendro, DAP_forc) %>%
+  pivot_longer(
+    cols = c(DAP_dendro, DAP_forc),
+    names_to = "method",
+    values_to = "DAP"
+  ) %>%
+  mutate(method = if_else(method == "DAP_dendro", "Growth rings", "Caliper"))
+
+# long_data <- long_data %>% 
+#   filter(id != 27)
+
+ggplot(long_data, aes(x = method, y = DAP, fill = method)) +
+  # Boxplot
+  geom_boxplot(
+    alpha = 0.8,
+    width = 0.6,
+    outlier.shape = 21,
+    outlier.fill = "white",
+    outlier.color = "black"
+  ) +
+   # Overlay individual points
+  geom_jitter(
+    aes(color = method),  # use same grouping for color
+    width = 0.15,         # controls horizontal spread
+    alpha = 0.5,          # transparency of points
+    size = 1.5,           # point size
+    shape = 16            # solid dots
+  ) +
+
+  # Overlay mean point
+  stat_summary(
+    fun = mean,
+    geom = "point",
+    shape = 23,           # diamond shape
+    size = 3.5,
+    fill = "white",
+    color = "black",
+    stroke = 1
+  ) +
+  labs(
+    title = "Diameter at Breast Height by Measurement Method",
+    x = "Measurement Method",
+    y = "Diameter (cm)"
+  ) +
+  scale_fill_manual(values = c("Growth rings" = "#1f78b4", "Caliper" = "#33a02c")) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 10),
+    legend.position = "none"
+  )
+
+```
+
+```{r comparison of increment in diameter}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(emmeans)
+
+# Step 1: Combine and filter for desired years
+combined_dap <- bind_rows(fict1, fict2) %>%
+  filter(Edad %in% c(53, 59, 61, 62)) %>%
+  group_by(id, metd, plot, Edad) %>%
+  summarise(DAP = mean(DAP, na.rm = TRUE), .groups = "drop")
+
+# Step 2: Pivot to wide format
+growth_data <- combined_dap %>%
+  pivot_wider(
+    names_from = Edad,
+    values_from = DAP,
+    names_prefix = "DAP_"
+  ) %>%
+  filter(!is.na(DAP_53) & !is.na(DAP_59) & !is.na(DAP_61) & !is.na(DAP_62)) %>%
+  mutate(
+    increment_53_59 = DAP_59 - DAP_53,
+    increment_59_61 = DAP_61 - DAP_59,
+    increment_61_62 = DAP_62 - DAP_61
+  )
+
+# Step 3: Convert to long format for plotting
+growth_long <- growth_data %>%
+  select(id, metd, plot, starts_with("increment")) %>%
+  pivot_longer(
+    cols = starts_with("increment"),
+    names_to = "interval",
+    values_to = "increment"
+  )
+
+# # Optional: Rename intervals for clarity
+# growth_long$interval <- recode(growth_long$interval,
+#                                increment_53_59 = "53–59",
+#                                increment_59_61 = "59–61",
+#                                increment_61_62 = "61–62")
+
+###########PLOT
+library(ggplot2)
+library(dplyr)
+
+pd <- position_dodge(width = 0.75)
+
+ggplot(growth_long, aes(x = interval, y = increment, fill = metd)) +
+  
+  # Boxplot only (no outliers shown visually)
+  geom_boxplot(
+    position = pd,
+    alpha = 0.9,
+    width = 0.6,
+    outlier.shape = NA
+  ) +
+  
+  # Mean point per group (black, small)
+  stat_summary(
+    aes(group = metd),
+    fun = mean,
+    geom = "point",
+    position = pd,
+    shape = 21,
+    size = 2.5,
+    fill = "white",
+    color = "black",
+    stroke = 1
+  ) +
+  
+  # Zoom in on y-axis without removing data
+  coord_cartesian(ylim = c(0, 3)) +  # Adjust limits as needed
+  
+  scale_fill_manual(
+    values = c("Dendro" = "#1f78b4", "Forc" = "#33a02c"),
+    labels = c("Dendro" = "Growth rings", "Forc" = "Caliper")
+  ) +
+  
+  labs(
+    title = "Increment in Diameter by Interval and Method",
+    x = "Age Interval",
+    y = "Increment (cm)",
+    fill = "Method"
+  ) +
+  
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5, size = 16),
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 12),
+    legend.position = "top",
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_blank()
+  )
+
+```
+
+---
